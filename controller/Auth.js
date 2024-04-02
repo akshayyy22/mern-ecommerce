@@ -52,6 +52,15 @@ exports.loginUser = async (req, res) => {
     .json({ id: user.id, role: user.role });
 };
 
+exports.logout = async (req, res) => {
+  res
+    .cookie('jwt', null, {
+      expires: new Date(Date.now()),
+      httpOnly: true,
+    })
+    .sendStatus(200)
+};
+
 exports.checkAuth = async (req, res) => {
   if (req.user) {
     res.json(req.user);
@@ -70,7 +79,7 @@ exports.resetPasswordRequest = async (req, res) => {
 
     // Also set token in email
     const resetPageLink =
-      'http://localhost:3002/reset-password?token=' + token + '&email=' + email;
+      'http://localhost:3000/reset-password?token=' + token + '&email=' + email;
     const subject = 'reset password for e-commerce';
     const html = `<p>Click <a href='${resetPageLink}'>here</a> to Reset Password</p>`;
 
