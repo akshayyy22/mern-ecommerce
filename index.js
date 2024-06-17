@@ -11,6 +11,8 @@ const jwt = require('jsonwebtoken');
 const JwtStrategy = require('passport-jwt').Strategy;
 const ExtractJwt = require('passport-jwt').ExtractJwt;
 const cookieParser = require('cookie-parser');
+const path = require('path');
+
 const { createProduct } = require('./controller/Product');
 const productsRouter = require('./routes/Products');
 const categoriesRouter = require('./routes/Categories');
@@ -21,7 +23,6 @@ const cartRouter = require('./routes/Cart');
 const ordersRouter = require('./routes/Order');
 const { User } = require('./model/User');
 const { isAuth, sanitizeUser, cookieExtractor } = require('./services/common');
-const path = require('path');
 const { Order } = require('./model/Order');
 
 const server = express();
@@ -30,12 +31,13 @@ const server = express();
 mongoose.connect(process.env.MONGODB_URL, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-});
+})
+.then(() => console.log('MongoDB connected'))
+.catch(err => console.error('MongoDB connection error:', err));
 
 // Initialize MongoStore
 const sessionStore = MongoStore.create({
   mongoUrl: process.env.MONGODB_URL,
-  mongooseConnection: mongoose.connection,
 });
 
 // Create session middleware
@@ -45,18 +47,19 @@ server.use(
     resave: false,
     saveUninitialized: false,
     store: sessionStore,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production', // Set to true if using HTTPS
+      httpOnly: true,
+      maxAge: 1000 * 60 * 60 * 24, // 1 day
+    },
   })
 );
 
-// Other middleware and routes...
+// Middleware
 server.use(cookieParser());
 server.use(passport.initialize());
 server.use(passport.session());
-server.use(
-  cors({
-    exposedHeaders: ['X-Total-Count'],
-  })
-);
+server.use(cors({ exposedHeaders: ['X-Total-Count'] }));
 server.use(express.json());
 
 // Routes
@@ -79,35 +82,24 @@ server.get('*', (req, res) => {
 // Passport Strategies
 passport.use(
   'local',
-  new LocalStrategy({ usernameField: 'email' }, async function (
-    email,
-    password,
-    done
-  ) {
+  new LocalStrategy({ usernameField: 'email' }, async (email, password, done) => {
     try {
       const user = await User.findOne({ email: email });
       if (!user) {
-        return done(null, false, { message: 'invalid credentials' });
+        return done(null, false, { message: 'Invalid credentials' });
       }
-      crypto.pbkdf2(
-        password,
-        user.salt,
-        310000,
-        32,
-        'sha256',
-        async function (err, hashedPassword) {
-          if (!crypto.timingSafeEqual(user.password, hashedPassword)) {
-            return done(null, false, { message: 'invalid credentials' });
-          }
-          const token = jwt.sign(
-            sanitizeUser(user),
-            process.env.JWT_SECRET_KEY
-          );
-          done(null, { id: user.id, role: user.role, token });
+      crypto.pbkdf2(password, user.salt, 310000, 32, 'sha256', (err, hashedPassword) => {
+        if (err) {
+          return done(err);
         }
-      );
+        if (!crypto.timingSafeEqual(user.password, hashedPassword)) {
+          return done(null, false, { message: 'Invalid credentials' });
+        }
+        const token = jwt.sign(sanitizeUser(user), process.env.JWT_SECRET_KEY);
+        return done(null, { id: user.id, role: user.role, token });
+      });
     } catch (err) {
-      done(err);
+      return done(err);
     }
   })
 );
@@ -119,7 +111,7 @@ passport.use(
       jwtFromRequest: cookieExtractor,
       secretOrKey: process.env.JWT_SECRET_KEY,
     },
-    async function (jwt_payload, done) {
+    async (jwt_payload, done) => {
       try {
         const user = await User.findById(jwt_payload.id);
         if (user) {
@@ -134,18 +126,45 @@ passport.use(
   )
 );
 
-passport.serializeUser(function (user, cb) {
-  process.nextTick(function () {
-    return cb(null, { id: user.id, role: user.role });
+passport.serializeUser((user, cb) => {
+  process.nextTick(() => {
+    cb(null, { id: user.id, role: user.role });
   });
 });
 
-passport.deserializeUser(function (user, cb) {
-  process.nextTick(function () {
-    return cb(null, user);
+passport.deserializeUser((user, cb) => {
+  process.nextTick(() => {
+    cb(null, user);
   });
 });
 
-server.listen(process.env.PORT, () => {
-  console.log(`Server started on port ${process.env.PORT}`);
+// Stripe Payment Integration
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+
+server.post("/create-payment-intent", async (req, res) => {
+  const { totalAmount } = req.body;
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: totalAmount,
+      currency: "inr",
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    res.send ({
+      clientSecret: paymentIntent.client_secret ,
+    })
+  });
+// Error handling middleware
+server.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send('Something went wrong!');
+});
+
+// Start the server
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`Server started on port ${PORT}`);
 });
